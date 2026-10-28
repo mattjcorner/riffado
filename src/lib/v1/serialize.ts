@@ -29,6 +29,7 @@ export type V1Transcript = {
 };
 
 export type V1Summary = {
+    source: string;
     text: string | null;
     action_items: string[] | null;
     key_points: string[] | null;
@@ -137,6 +138,7 @@ export function serializeSummary(
     const keyPoints = decryptJsonField<unknown>(enhancement.keyPoints);
 
     return {
+        source: enhancement.source,
         text: decryptText(enhancement.summary) ?? null,
         action_items: stringArrayOrNull(actionItems),
         key_points: stringArrayOrNull(keyPoints),
@@ -181,8 +183,8 @@ export function serializeRecording(
 /**
  * Choose the primary transcript for singular contexts (the `transcript` field,
  * summary input, the v1 transcript endpoint, the dashboard, exports).
- * Prefers the user's configured source, then their own 'riffado'
- * transcript, then whatever exists.
+ * Prefers the user's configured source, then one written through the API
+ * ('external'), then their own 'riffado' transcript, then whatever exists.
  */
 export function resolvePrimaryTranscript<T extends { source: string }>(
     transcripts: T[],
@@ -191,6 +193,7 @@ export function resolvePrimaryTranscript<T extends { source: string }>(
     if (transcripts.length === 0) return null;
     return (
         transcripts.find((t) => t.source === preferredSource) ??
+        transcripts.find((t) => t.source === "external") ??
         transcripts.find((t) => t.source === "riffado") ??
         transcripts[0]
     );

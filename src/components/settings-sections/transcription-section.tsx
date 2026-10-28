@@ -454,6 +454,9 @@ export function TranscriptionSection() {
                                     <SelectItem value="riffado">
                                         My provider
                                     </SelectItem>
+                                    <SelectItem value="external">
+                                        External (API)
+                                    </SelectItem>
                                 </SelectContent>
                             </Select>
                             <p className="text-xs text-muted-foreground">

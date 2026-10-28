@@ -10,6 +10,7 @@ import {
 const WINDOW_MS = 60_000;
 const IP_LIMIT = 1_200;
 const AUTHENTICATED_LIMIT = 600;
+const WRITE_LIMIT = 60;
 
 export { getClientIp };
 
@@ -56,16 +57,35 @@ export async function enforceV1IpRateLimit(
     return result.allowed ? null : rateLimitResponse(result);
 }
 
+function rateLimitIdentity(authn: AuthenticatedRequest): string {
+    return authn.via === "api-key" && authn.apiKeyId
+        ? `api-key:${authn.apiKeyId}`
+        : `user:${authn.user.id}`;
+}
+
 export async function enforceV1AuthenticatedRateLimit(
     authn: AuthenticatedRequest,
 ): Promise<NextResponse | null> {
-    const identity =
-        authn.via === "api-key" && authn.apiKeyId
-            ? `api-key:${authn.apiKeyId}`
-            : `user:${authn.user.id}`;
-    const result = await consumeRateLimitBucket(`v1:auth:${identity}`, {
-        limit: AUTHENTICATED_LIMIT,
-        windowMs: WINDOW_MS,
-    });
+    const result = await consumeRateLimitBucket(
+        `v1:auth:${rateLimitIdentity(authn)}`,
+        {
+            limit: AUTHENTICATED_LIMIT,
+            windowMs: WINDOW_MS,
+        },
+    );
+    return result.allowed ? null : rateLimitResponse(result);
+}
+
+/** Extra per-token bucket for v1 writes, consumed on top of the read buckets. */
+export async function enforceV1WriteRateLimit(
+    authn: AuthenticatedRequest,
+): Promise<NextResponse | null> {
+    const result = await consumeRateLimitBucket(
+        `v1:write:${rateLimitIdentity(authn)}`,
+        {
+            limit: WRITE_LIMIT,
+            windowMs: WINDOW_MS,
+        },
+    );
     return result.allowed ? null : rateLimitResponse(result);
 }

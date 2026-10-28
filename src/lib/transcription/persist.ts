@@ -8,13 +8,14 @@ import { encryptJsonField, encryptText } from "@/lib/encryption/fields";
  *   - 'riffado' = produced by the user's own provider (server/browser)
  *   - 'plaud'   = imported from Plaud's native transcription
  *   - 'mixed'   = user-edited combination of the above
+ *   - 'external' = written by the user's own tooling through `/api/v1`
  * A recording can hold at most one row per source (enforced by the
  * `(recordingId, userId, source)` unique), so the sources coexist. See #204.
  */
-export type TranscriptSource = "riffado" | "plaud" | "mixed";
+export type TranscriptSource = "riffado" | "plaud" | "mixed" | "external";
 
 /** Summaries stay single per recording; `source` records who produced it. */
-export type EnhancementSource = "riffado" | "plaud";
+export type EnhancementSource = "riffado" | "plaud" | "external";
 
 export interface UpsertTranscriptionArgs {
     userId: string;
@@ -163,7 +164,8 @@ export async function upsertTranscription(
 
 /**
  * Insert-or-update the single AI summary row for `(recordingId, userId)`.
- * `source` records whether riffado generated it or it was imported from Plaud.
+ * `source` records whether riffado generated it, it was imported from Plaud,
+ * or it was written through `/api/v1` (`external`).
  */
 export async function upsertEnhancement(
     args: UpsertEnhancementArgs,

@@ -59,6 +59,7 @@ interface TranscriptionPanelProps {
 function transcriptSourceLabel(source: string): string {
     if (source === "plaud") return "Plaud";
     if (source === "mixed") return "Mix";
+    if (source === "external") return "External";
     return "Your provider";
 }
 

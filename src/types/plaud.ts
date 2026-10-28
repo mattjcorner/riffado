@@ -141,3 +141,56 @@ export interface PlaudTranscriptSegment {
     speaker?: string | number;
     content?: string;
 }
+
+// --- Plaud 4.0 (`/file-app/v4/*`) ---
+// Accounts migrated to the 4.0 platform get in-band status -1800907 from the
+// 3.0 `/file/*` endpoints. All fields optional: the shapes come from live
+// captures by third-party clients, not a published schema.
+
+/** Envelope shared by every `/file-app/v4/*` endpoint. */
+export interface PlaudV4Envelope<T> {
+    status: number;
+    msg?: string;
+    data?: T;
+}
+
+/** One item of `GET /file-app/v4/recordings/all`. */
+export interface PlaudV4RecordingItem {
+    node_id?: string;
+    file_id?: string;
+    name?: string;
+    duration_ms?: number;
+    created_at_show_ms?: number;
+    updated_at_show_ms?: number;
+    start_time_ms?: number;
+    version_ms?: number;
+    file_size?: number;
+    filesize?: number;
+    file_md5?: string;
+    serial_number?: string;
+    device_sn?: string;
+    sn?: string;
+    timezone?: number;
+    zonemins?: number;
+    scene?: number;
+    status?: number;
+    file_task_status?: number;
+}
+
+export interface PlaudV4RecordingsPage {
+    items?: PlaudV4RecordingItem[];
+    next_cursor?: string | null;
+}
+
+/** One entry of `data.objects[]` in `GET /file-app/v4/files/detail/{id}`. */
+export interface PlaudV4DetailObject {
+    object_type?: string; // 'AUDIO' | 'TRANSCRIPT' | 'POLISHED_TRANSCRIPT' | 'SUMMARY' | 'SUMMARY_*' | 'OUTLINE' | ...
+    mime_type?: string;
+    content_url?: string | null; // presigned; absent until generated
+}
+
+export interface PlaudV4FileDetail {
+    node?: { node_id?: string; version_ms?: number; name?: string };
+    meta?: { file_id?: string; duration?: number; start_time?: number };
+    objects?: PlaudV4DetailObject[];
+}

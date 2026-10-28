@@ -186,10 +186,13 @@ export async function fetchPlaudUserMeEmail(
         const body = (await res.json()) as {
             status?: number;
             data?: { email?: unknown };
+            data_user?: { email?: unknown };
             email?: unknown;
         };
         const raw =
             (typeof body.email === "string" && body.email) ||
+            (typeof body.data_user?.email === "string" &&
+                body.data_user.email) ||
             (typeof body.data?.email === "string" && body.data.email) ||
             null;
         if (!raw) return null;

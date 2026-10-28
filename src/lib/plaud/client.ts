@@ -9,6 +9,7 @@ import type {
     PlaudTempUrlResponse,
     PlaudV4Envelope,
     PlaudV4FileDetail,
+    PlaudV4FileMeta,
     PlaudV4RecordingsPage,
 } from "@/types/plaud";
 import { plaudFetch } from "./fetch";
@@ -96,6 +97,7 @@ export class PlaudClient {
     private workspaceFallbackToUt = false;
     private detectedPlatform?: PlaudPlatform;
     private readonly v4Cursors = new Map<string, string | null>();
+    private readonly v4Meta = new Map<string, PlaudV4FileMeta>();
 
     constructor(
         userToken: string,
@@ -526,6 +528,11 @@ export class PlaudClient {
         );
     }
 
+    /**
+     * Presigned audio URL. 3.0: `/file/temp-url/{id}`. 4.0 has no temp-url
+     * endpoint; the URL is the `AUDIO` object's `content_url` from the file
+     * detail, returned as `temp_url`.
+     */
     async getTempUrl(
         fileId: string,
         isOpus: boolean = true,
@@ -534,36 +541,29 @@ export class PlaudClient {
             is_opus: isOpus ? "1" : "0",
         });
 
-        return this.request<PlaudTempUrlResponse>(
-            `/file/temp-url/${fileId}?${params.toString()}`,
+        return this.onPlatform(
+            () =>
+                this.request<PlaudTempUrlResponse>(
+                    `/file/temp-url/${fileId}?${params.toString()}`,
+                ),
+            async () => ({
+                status: 0,
+                temp_url: await this.getV4AudioUrl(fileId),
+            }),
         );
     }
 
     /**
-     * Presigned audio URL for a 4.0 recording: the detail's `AUDIO` object,
-     * else the 3.0 temp-url endpoint. Throws `PLAUD_API_ERROR` with
-     * `details.reason === PLAUD_AUDIO_NOT_READY` when neither has one (Plaud
-     * has not pulled the audio off the device yet).
+     * Presigned audio URL of a 4.0 recording (the detail's `AUDIO` object).
+     * Also remembers the detail's `meta` for `v4MetaFor`. Throws
+     * `PLAUD_API_ERROR` with `details.reason === PLAUD_AUDIO_NOT_READY` when
+     * Plaud has no `content_url` for the audio yet.
      */
-    async getV4AudioUrl(fileId: string, preferOpus: boolean): Promise<string> {
-        const fromDetail = findV4AudioUrl(await this.getV4FileDetail(fileId));
-        if (fromDetail) return fromDetail;
-
-        try {
-            const legacy = await this.getTempUrl(fileId, preferOpus);
-            const url =
-                preferOpus && legacy?.temp_url_opus
-                    ? legacy.temp_url_opus
-                    : legacy?.temp_url;
-            if (!isV4MigratedBody(legacy) && url) return url;
-        } catch (err) {
-            if (
-                err instanceof AppError &&
-                err.code === ErrorCode.PLAUD_INVALID_TOKEN
-            ) {
-                throw err;
-            }
-        }
+    async getV4AudioUrl(fileId: string): Promise<string> {
+        const detail = await this.getV4FileDetail(fileId);
+        if (detail.meta) this.v4Meta.set(fileId, detail.meta);
+        const url = findV4AudioUrl(detail);
+        if (url) return url;
         throw new AppError(
             ErrorCode.PLAUD_API_ERROR,
             "Plaud has no downloadable audio for this recording yet. It will be retried on the next sync.",
@@ -572,27 +572,26 @@ export class PlaudClient {
         );
     }
 
+    /**
+     * 4.0 detail `meta` (recording start, device serial, ...) captured by the
+     * last audio download of `fileId`, or `undefined`.
+     */
+    v4MetaFor(fileId: string): PlaudV4FileMeta | undefined {
+        return this.v4Meta.get(fileId);
+    }
+
     async downloadRecording(
         fileId: string,
         preferOpus: boolean = true,
     ): Promise<Buffer> {
         try {
-            const downloadUrl = await this.onPlatform(
-                async () => {
-                    const tempUrlResponse = await this.getTempUrl(
-                        fileId,
-                        preferOpus,
-                    );
-                    if (isV4MigratedBody(tempUrlResponse)) {
-                        throw migratedError();
-                    }
-                    return preferOpus && tempUrlResponse.temp_url_opus
-                        ? tempUrlResponse.temp_url_opus
-                        : tempUrlResponse.temp_url;
-                },
-                () => this.getV4AudioUrl(fileId, preferOpus),
-            );
+            const tempUrlResponse = await this.getTempUrl(fileId, preferOpus);
+            const downloadUrl =
+                preferOpus && tempUrlResponse.temp_url_opus
+                    ? tempUrlResponse.temp_url_opus
+                    : tempUrlResponse.temp_url;
 
+            // Presigned S3 link: no Authorization header (S3 answers 400).
             const response = await plaudFetch(downloadUrl);
             if (!response.ok) {
                 throw new AppError(

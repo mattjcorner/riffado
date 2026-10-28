@@ -175,6 +175,8 @@ export interface PlaudV4RecordingItem {
     scene?: number;
     status?: number;
     file_task_status?: number;
+    safe_scan?: unknown;
+    parent_folder?: unknown;
 }
 
 export interface PlaudV4RecordingsPage {
@@ -186,11 +188,25 @@ export interface PlaudV4RecordingsPage {
 export interface PlaudV4DetailObject {
     object_type?: string; // 'AUDIO' | 'TRANSCRIPT' | 'POLISHED_TRANSCRIPT' | 'SUMMARY' | 'SUMMARY_*' | 'OUTLINE' | ...
     mime_type?: string;
-    content_url?: string | null; // presigned; absent until generated
+    content_url?: string | null; // presigned S3, fetch without auth; may be null
+    object_size?: number;
+    version_ms?: number;
+}
+
+export interface PlaudV4FileMeta {
+    file_id?: string;
+    duration?: number; // ms
+    start_time?: number; // unix ms
+    timezone_iana?: string;
+    serial_number?: string;
+    scene_source?: unknown;
+    task_status?: number;
+    task_status_reason?: unknown;
+    version_ms?: number;
 }
 
 export interface PlaudV4FileDetail {
     node?: { node_id?: string; version_ms?: number; name?: string };
-    meta?: { file_id?: string; duration?: number; start_time?: number };
+    meta?: PlaudV4FileMeta;
     objects?: PlaudV4DetailObject[];
 }

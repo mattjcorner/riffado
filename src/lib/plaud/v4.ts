@@ -5,6 +5,7 @@ import type {
     PlaudRecording,
     PlaudV4DetailObject,
     PlaudV4FileDetail,
+    PlaudV4FileMeta,
     PlaudV4RecordingItem,
 } from "@/types/plaud";
 
@@ -127,6 +128,31 @@ function findObject(
 export function findV4AudioUrl(detail: PlaudV4FileDetail): string | undefined {
     const audio = findObject(detail.objects ?? [], (t) => t === "AUDIO");
     return nonEmptyString(audio?.content_url);
+}
+
+/**
+ * Overlay a 4.0 detail `meta` on a list-derived recording: the device serial
+ * (absent from the list), the real recording start (`meta.start_time`; the
+ * list only has `created_at_show_ms`) and the duration when the list had none.
+ */
+export function applyV4Meta(
+    recording: PlaudRecording,
+    meta: PlaudV4FileMeta | undefined,
+): PlaudRecording {
+    if (!meta) return recording;
+    const duration =
+        recording.duration > 0
+            ? recording.duration
+            : Math.max(0, finiteNumber(meta.duration) ?? 0);
+    const start = finiteNumber(meta.start_time) ?? recording.start_time;
+    return {
+        ...recording,
+        serial_number:
+            nonEmptyString(meta.serial_number) ?? recording.serial_number,
+        duration,
+        start_time: start,
+        end_time: start + duration,
+    };
 }
 
 /**

@@ -23,7 +23,7 @@ import {
     parseTranscript,
     selectContentItems,
 } from "@/lib/plaud/content";
-import { md5Hex } from "@/lib/plaud/v4";
+import { applyV4Meta, md5Hex } from "@/lib/plaud/v4";
 import {
     captureServerEvent,
     captureServerException,
@@ -226,14 +226,22 @@ async function processRecording(
         const contentType = "audio/mpeg";
         await storage.uploadFile(storageKey, audioBuffer, contentType);
 
+        const timing =
+            plaudClient.platform === "v4"
+                ? applyV4Meta(
+                      plaudRecording,
+                      plaudClient.v4MetaFor(plaudRecording.id),
+                  )
+                : plaudRecording;
+
         const recordingData = {
             userId: context.userId,
-            deviceSn: plaudRecording.serial_number,
+            deviceSn: timing.serial_number,
             plaudFileId: plaudRecording.id,
             filename: encryptText(plaudRecording.filename),
-            duration: plaudRecording.duration,
-            startTime: new Date(plaudRecording.start_time),
-            endTime: new Date(plaudRecording.end_time),
+            duration: timing.duration,
+            startTime: new Date(timing.start_time),
+            endTime: new Date(timing.end_time),
             filesize: plaudRecording.filesize || audioBuffer.length,
             fileMd5: plaudRecording.file_md5 || md5Hex(audioBuffer),
             storageType: env.DEFAULT_STORAGE_TYPE,

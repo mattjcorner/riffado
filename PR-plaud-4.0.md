@@ -26,7 +26,7 @@ For a migrated account every 3.0 endpoint answers with in-band status `-1800907`
 | Auth | workspace token | user token plus `x-scope-type: workspace`, `x-scope-id: <ws_ id>`, `app-platform`/`edit-from: web` (the workspace token gets HTTP 400) |
 | List | `/file/simple/web` (skip/limit) | `/file-app/v4/recordings/all` (`next_cursor`). The client remembers the cursor for each offset, so the sync loop still pages by `skip`. |
 | Detail | `/file/detail/{id}` `content_list` | `/file-app/v4/files/detail/{id}` `objects[]`, adapted to `content_list` so the existing parsers import transcript and summary |
-| Audio | `/file/temp-url/{id}` | presigned `content_url` of the `AUDIO` object, else 3.0 temp-url. If neither exists, the recording fails with a retryable message and is picked up on the next sync. |
+| Audio | `/file/temp-url/{id}` | presigned `content_url` of the `AUDIO` object (there is no 4.0 temp-url; the 3.0 one is 404), fetched without an `Authorization` header (S3 answers 400 to Plaud's). When `content_url` is null the recording fails with a retryable message and is picked up on the next sync. The detail `meta` supplies the device serial and the real start time. |
 | Devices | `/device/list` | `/device-app/device/list` (3.0 envelope) |
 | Rename | `PATCH /file/{id}` | `PATCH /file-app/v4/nodes/rename/{node_id}` with `origin_version`, one retry on `-1800313` |
 
@@ -40,7 +40,7 @@ The endpoint shapes follow the 4.0 client in [ckelsoe/obsidian-plaud-importer](h
 
 ## Tests
 
-- `src/tests/plaud-v4.test.ts`: list item mapping, detail adapter feeding `selectContentItems`/parsers, polished-transcript preference, audio URL lookup, 3.0 accounts never touching 4.0, switch on in-band and HTTP-error `-1800907`, user token and scope headers, cursor paging including walk-forward and end of list, trash, workspace discovery, negative in-band status mapping, audio from detail, temp-url fallback, audio-not-ready, device list fallback, node rename, `/user/me` `data_user`.
+- `src/tests/plaud-v4.test.ts`: list item mapping, detail adapter feeding `selectContentItems`/parsers, polished-transcript preference, audio URL lookup, 3.0 accounts never touching 4.0, switch on in-band and HTTP-error `-1800907`, user token and scope headers, cursor paging including walk-forward and end of list, trash, workspace discovery, negative in-band status mapping, audio from detail with no auth header, `getTempUrl` served from the detail, null `content_url` (audio and polished transcript), segment-uid transcripts with and without content, detail `meta` overlay, device list fallback, node rename, `/user/me` `data_user`.
 - `src/tests/sync/plaud-v4-sync.test.ts`: a normalized 4.0 recording syncs with duration, start time, version, and size/md5 taken from the audio.
 - Full suite, `pnpm type-check` and `biome check` pass.
 - Live: a migrated account on a self-hosted instance synced its recordings (list, metadata, audio, Plaud transcript/summary) with this branch. <!-- fill in after the live test -->

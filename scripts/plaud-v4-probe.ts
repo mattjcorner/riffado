@@ -184,17 +184,19 @@ async function main(): Promise<void> {
         log(`2 detail ${tag}`, detail.http === 200 ? "PASS" : "FAIL", `http=${detail.http} objects=[${summary}]`);
 
         // Step 3: audio.
+        const meta = ((detail.body.data as Json | undefined)?.meta ?? {}) as Json;
+        log(
+            `2 meta ${tag}`,
+            typeof meta.start_time === "number" ? "PASS" : "FAIL",
+            `start_time=${typeof meta.start_time === "number" ? "yes" : "no"} duration=${String(meta.duration)} serial=${meta.serial_number ? "present" : "absent"} task_status=${String(meta.task_status)}`,
+        );
+
+        // Step 3: audio (4.0 has no temp-url endpoint; detail AUDIO only).
         const audioObj = objects.find((o) => o.object_type === "AUDIO");
-        let audioUrl = audioObj?.content_url ? String(audioObj.content_url) : "";
-        let route = "detail.AUDIO";
+        const audioUrl = audioObj?.content_url ? String(audioObj.content_url) : "";
+        const route = "detail.AUDIO";
         if (!audioUrl) {
-            const legacy = await get(`/file/temp-url/${encodeURIComponent(id)}?is_opus=0`);
-            if (typeof legacy.body.temp_url === "string" && legacy.body.temp_url) {
-                audioUrl = legacy.body.temp_url;
-                route = "v3 temp-url";
-            } else {
-                log(`3 audio ${tag}`, "FAIL", `no AUDIO content_url; v3 temp-url http=${legacy.http} status=${String(legacy.body.status)}`);
-            }
+            log(`3 audio ${tag}`, "FAIL", `AUDIO object ${audioObj ? "has null content_url" : "missing"}`);
         }
         if (audioUrl) {
             if (!download) {
@@ -226,7 +228,7 @@ async function main(): Promise<void> {
             } catch {}
             log(
                 `4 transcript ${tag}`,
-                res.ok && segments > 0 ? "PASS" : "FAIL",
+                !res.ok || segments < 0 ? "FAIL" : segments === 0 ? "INFO" : "PASS",
                 `type=${String(tr.object_type)} http=${res.status} chars=${text.length} segments=${segments}`,
             );
         }

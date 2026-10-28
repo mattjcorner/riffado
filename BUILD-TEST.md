@@ -50,16 +50,17 @@ Expected on a migrated account:
 [probe] PASS v4 devices - ...
 [probe] PASS 1 list - items=2 ...
 [probe] PASS 2 metadata file ...
-[probe] PASS 2 detail file ... objects=[AUDIO:url TRANSCRIPT:url SUMMARY:url ...]
+[probe] PASS 2 detail file ... objects=[AUDIO:url TRANSCRIPT:url POLISHED_TRANSCRIPT:nourl SUMMARY:url]
+[probe] PASS 2 meta file ... start_time=yes duration=... serial=present task_status=...
 [probe] PASS 3 audio file ... route=detail.AUDIO ... format=ogg
-[probe] PASS 4 transcript file ... segments=N
+[probe] PASS 4 transcript file ... segments=N      (INFO with segments=0 when Plaud's transcript is [])
 [probe] PASS 4 summary file ...
 ```
 
-Read the `3 audio` lines closely: `objects=[AUDIO:nourl]` plus a FAIL means
-Plaud has no downloadable audio for that recording yet. The probe then also
-reports what the 3.0 temp-url route returned. Report the full probe output
-(it is safe to paste).
+4.0 has no temp-url endpoint (404), so audio comes only from the detail's
+`AUDIO.content_url`. `AUDIO:nourl` plus a FAIL means Plaud has no
+downloadable audio for that recording yet; the app retries it on every sync.
+Report the full probe output (it is safe to paste).
 
 ## 3. End-to-end sync with the new image (cloned DB, live app untouched)
 

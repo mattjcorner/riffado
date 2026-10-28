@@ -13,6 +13,7 @@ import { decryptText } from "@/lib/encryption/fields";
 import { env } from "@/lib/env";
 import { isAdminEmail } from "@/lib/hosted/admin/guard";
 import { initialSettingsFromRow } from "@/lib/settings/initial-settings";
+import { resolvePrimaryTranscript } from "@/lib/v1/serialize";
 import { serializeRecording } from "@/types/recording";
 
 export default async function DashboardPage() {
@@ -48,6 +49,7 @@ export default async function DashboardPage() {
                 recordingId: transcriptions.recordingId,
                 text: transcriptions.text,
                 language: transcriptions.detectedLanguage,
+                source: transcriptions.source,
             })
             .from(transcriptions)
             .where(eq(transcriptions.userId, session.user.id)),
@@ -98,12 +100,25 @@ export default async function DashboardPage() {
         ),
     );
 
-    const transcriptionMap = new Map(
-        userTranscriptions.map((t) => [
-            t.recordingId,
-            { text: decryptText(t.text), language: t.language || undefined },
-        ]),
-    );
+    const transcriptsByRecording = new Map<string, typeof userTranscriptions>();
+    for (const t of userTranscriptions) {
+        const rows = transcriptsByRecording.get(t.recordingId) ?? [];
+        rows.push(t);
+        transcriptsByRecording.set(t.recordingId, rows);
+    }
+    const preferredSource = settingsRow?.preferredTranscriptSource ?? "plaud";
+    const transcriptionMap = new Map<
+        string,
+        { text: string; language: string | undefined }
+    >();
+    for (const [recordingId, rows] of transcriptsByRecording) {
+        const primary = resolvePrimaryTranscript(rows, preferredSource);
+        if (!primary) continue;
+        transcriptionMap.set(recordingId, {
+            text: decryptText(primary.text),
+            language: primary.language || undefined,
+        });
+    }
 
     // One source of truth for InitialSettings + their defaults lives in
     // `src/lib/settings/initial-settings.ts`; adding a new preference

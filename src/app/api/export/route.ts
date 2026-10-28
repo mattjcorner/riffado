@@ -11,6 +11,7 @@ import { requireApiSession } from "@/lib/auth-server";
 import { decryptJsonField, decryptText } from "@/lib/encryption/fields";
 import { AppError, apiHandler, ErrorCode } from "@/lib/errors";
 import { captureServerEvent } from "@/lib/posthog-server";
+import { resolvePrimaryTranscript } from "@/lib/v1/serialize";
 
 // GET - Export recordings in specified format
 export const GET = apiHandler(async (request: Request) => {
@@ -78,11 +79,21 @@ export const GET = apiHandler(async (request: Request) => {
         ]),
     );
 
+    const transcriptsByRecording = new Map<
+        string,
+        (typeof userTranscriptions)[number][]
+    >();
+    for (const t of userTranscriptions) {
+        const rows = transcriptsByRecording.get(t.recordingId) ?? [];
+        rows.push({ ...t, text: decryptText(t.text) });
+        transcriptsByRecording.set(t.recordingId, rows);
+    }
+    const preferredSource = settings?.preferredTranscriptSource ?? "plaud";
     const transcriptionMap = new Map(
-        userTranscriptions.map((t) => [
-            t.recordingId,
-            { ...t, text: decryptText(t.text) },
-        ]),
+        [...transcriptsByRecording].flatMap(([recordingId, rows]) => {
+            const primary = resolvePrimaryTranscript(rows, preferredSource);
+            return primary ? [[recordingId, primary] as const] : [];
+        }),
     );
     const decryptedRecordings = userRecordings.map((r) => ({
         ...r,
@@ -107,11 +118,23 @@ export const GET = apiHandler(async (request: Request) => {
                         filesize: recording.filesize,
                         transcription:
                             transcriptionMap.get(recording.id)?.text || null,
+                        transcriptions: (
+                            transcriptsByRecording.get(recording.id) ?? []
+                        ).map((t) => ({
+                            source: t.source,
+                            text: t.text,
+                            language: t.detectedLanguage,
+                            provider: t.provider,
+                            model: t.model,
+                        })),
                         summary: enhancement
                             ? {
                                   summary: enhancement.summary,
                                   actionItems: enhancement.actionItems,
                                   keyPoints: enhancement.keyPoints,
+                                  source: enhancement.source,
+                                  provider: enhancement.provider,
+                                  model: enhancement.model,
                               }
                             : null,
                     };

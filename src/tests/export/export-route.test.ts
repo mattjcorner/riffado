@@ -99,4 +99,76 @@ describe("GET /api/export (regression: summary decryption)", () => {
         // Never leak the raw ciphertext prefix into the export.
         expect(JSON.stringify(body)).not.toContain("enc:");
     });
+
+    it("exports every transcript source and picks the primary by preference", async () => {
+        queueSelect([{ preferredTranscriptSource: "external" }]);
+        queueSelect([
+            {
+                id: "rec-1",
+                userId: "user-1",
+                filename: "enc:Planning Call",
+                duration: 60000,
+                startTime: now,
+                filesize: 100,
+                deletedAt: null,
+            },
+        ]);
+        queueSelect([
+            {
+                recordingId: "rec-1",
+                text: "enc:mine",
+                source: "riffado",
+                detectedLanguage: "en",
+                provider: "openai",
+                model: "whisper-1",
+            },
+            {
+                recordingId: "rec-1",
+                text: "enc:Alice: hi",
+                source: "external",
+                detectedLanguage: null,
+                provider: "external",
+                model: "my-diarizer",
+            },
+        ]);
+        queueSelect([
+            {
+                recordingId: "rec-1",
+                summary: "enc:Summary",
+                actionItems: [],
+                keyPoints: [],
+                source: "external",
+                provider: "external",
+                model: "my-model",
+            },
+        ]);
+
+        const response = await GET(
+            new Request("https://app.example.com/api/export?format=json"),
+        );
+        const body = JSON.parse(await response.text());
+
+        expect(body[0].transcription).toBe("Alice: hi");
+        expect(body[0].transcriptions).toEqual([
+            {
+                source: "riffado",
+                text: "mine",
+                language: "en",
+                provider: "openai",
+                model: "whisper-1",
+            },
+            {
+                source: "external",
+                text: "Alice: hi",
+                language: null,
+                provider: "external",
+                model: "my-diarizer",
+            },
+        ]);
+        expect(body[0].summary).toMatchObject({
+            summary: "Summary",
+            source: "external",
+            model: "my-model",
+        });
+    });
 });

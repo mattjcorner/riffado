@@ -10,6 +10,7 @@ vi.mock("@/db/schema", () => ({
     recordings: "recordings",
     transcriptions: "transcriptions",
     aiEnhancements: "aiEnhancements",
+    userSettings: "userSettings",
 }));
 vi.mock("@/lib/encryption/fields", () => ({
     decryptText: (v: string | null) => (v == null ? v : `decrypted:${v}`),
@@ -23,7 +24,12 @@ function mockSelectSequence(results: Row[][]) {
     let call = 0;
     dbMock.select.mockImplementation(() => ({
         from: () => ({
-            where: () => Promise.resolve(results[call++] ?? []),
+            where: () => {
+                const rows = results[call++] ?? [];
+                return Object.assign(Promise.resolve(rows), {
+                    limit: () => Promise.resolve(rows),
+                });
+            },
         }),
     }));
 }
@@ -146,6 +152,10 @@ describe("buildAndUploadExportArchive", () => {
                 {
                     recordingId: "rec-1",
                     text: "enc-transcript",
+                    source: "riffado",
+                    provider: "openai",
+                    model: "whisper-1",
+                    detectedLanguage: "en",
                 },
             ],
             [
@@ -216,6 +226,87 @@ describe("buildAndUploadExportArchive", () => {
         );
         expect(audioEntry?.[1].compressionMethod).toBe(0);
         expect(entries.get("manifest.json")?.compressionMethod).toBe(8);
+    });
+
+    it("exports every transcript source and marks the preferred one primary", async () => {
+        mockSelectSequence([
+            [
+                {
+                    id: "rec-1",
+                    userId: "user-1",
+                    filename: "enc-filename",
+                    startTime: new Date("2026-01-01T00:00:00Z"),
+                    endTime: new Date("2026-01-01T00:01:00Z"),
+                    duration: 60000,
+                    filesize: 0,
+                    deviceSn: "local",
+                    storagePath: "audio/none.mp3",
+                },
+            ],
+            [
+                {
+                    recordingId: "rec-1",
+                    text: "riffado-text",
+                    source: "riffado",
+                    provider: "openai",
+                    model: "whisper-1",
+                    detectedLanguage: "en",
+                },
+                {
+                    recordingId: "rec-1",
+                    text: "Alice: hi\nBob: hello",
+                    source: "external",
+                    provider: "external",
+                    model: "my-diarizer",
+                    detectedLanguage: null,
+                },
+            ],
+            [
+                {
+                    recordingId: "rec-1",
+                    summary: "External summary",
+                    actionItems: [],
+                    keyPoints: ["kp"],
+                    source: "external",
+                    provider: "external",
+                    model: "my-model",
+                    createdAt: new Date("2026-01-01T00:02:00Z"),
+                },
+            ],
+            [{ preferred: "riffado" }],
+        ]);
+
+        await buildAndUploadExportArchive({
+            userId: "user-1",
+            storage,
+            storageKey: "exports/user-1/job-multi.zip",
+        });
+
+        const entries = await readZipEntries(storage.uploaded as Buffer);
+        const text = (suffix: string) =>
+            [...entries.entries()]
+                .find(([n]) => n.endsWith(suffix))?.[1]
+                .buffer.toString("utf-8");
+        expect(text("/transcripts/riffado.txt")).toBe("decrypted:riffado-text");
+        expect(text("/transcripts/external.txt")).toBe(
+            "decrypted:Alice: hi\nBob: hello",
+        );
+        expect(text("/transcript.txt")).toBe("decrypted:riffado-text");
+
+        const manifest = JSON.parse(text("manifest.json") ?? "{}");
+        expect(
+            manifest.recordings[0].transcripts.map(
+                (t: { source: string; model: string }) => [t.source, t.model],
+            ),
+        ).toEqual([
+            ["riffado", "whisper-1"],
+            ["external", "my-diarizer"],
+        ]);
+        expect(JSON.parse(text("/summary.json") ?? "{}")).toMatchObject({
+            source: "external",
+            model: "my-model",
+            keyPoints: ["decrypted:kp"],
+        });
     });
 
     it("skips missing audio without failing the whole export, and notes why in the manifest", async () => {

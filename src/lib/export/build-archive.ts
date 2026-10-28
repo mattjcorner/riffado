@@ -5,6 +5,10 @@ import { db } from "@/db";
 import { aiEnhancements, recordings, transcriptions } from "@/db/schema";
 import { decryptJsonField, decryptText } from "@/lib/encryption/fields";
 import type { StorageProvider } from "@/lib/storage/types";
+import {
+    getPreferredTranscriptSource,
+    resolvePrimaryTranscript,
+} from "@/lib/v1/serialize";
 
 export interface ArchiveResult {
     recordingCount: number;
@@ -20,8 +24,19 @@ interface ManifestRecording {
     filesize: number;
     deviceSn: string;
     audio: { included: boolean; path: string | null; reason?: string };
+    /** The primary transcript (the user's preferred source). */
     transcript: { included: boolean; path: string | null };
+    /** Every transcript, one per source. */
+    transcripts: ManifestTranscript[];
     summary: { included: boolean; path: string | null };
+}
+
+interface ManifestTranscript {
+    source: string;
+    provider: string;
+    model: string;
+    language: string | null;
+    path: string;
 }
 
 function audioExtension(storagePath: string): string {
@@ -82,9 +97,12 @@ export async function buildAndUploadExportArchive(input: {
                   .from(transcriptions)
                   .where(eq(transcriptions.userId, userId))
             : [];
-    const transcriptionMap = new Map(
-        userTranscriptions.map((t) => [t.recordingId, decryptText(t.text)]),
-    );
+    const transcriptionMap = new Map<string, typeof userTranscriptions>();
+    for (const t of userTranscriptions) {
+        const rows = transcriptionMap.get(t.recordingId) ?? [];
+        rows.push(t);
+        transcriptionMap.set(t.recordingId, rows);
+    }
 
     const userEnhancements =
         recordingIds.length > 0
@@ -107,6 +125,11 @@ export async function buildAndUploadExportArchive(input: {
             },
         ]),
     );
+
+    const preferredSource =
+        userTranscriptions.length > 0
+            ? await getPreferredTranscriptSource(userId)
+            : "plaud";
 
     const archive = new ZipArchive({ zlib: { level: 6 } });
     const passthrough = new PassThrough();
@@ -200,6 +223,7 @@ export async function buildAndUploadExportArchive(input: {
             deviceSn: recording.deviceSn,
             audio: { included: false, path: null },
             transcript: { included: false, path: null },
+            transcripts: [],
             summary: { included: false, path: null },
         };
 
@@ -274,13 +298,30 @@ export async function buildAndUploadExportArchive(input: {
             };
         }
 
-        const transcriptText = transcriptionMap.get(recording.id);
-        if (transcriptText) {
-            const transcriptPath = `${folder}/transcript.txt`;
-            archive.append(Buffer.from(transcriptText, "utf-8"), {
-                name: transcriptPath,
+        const transcriptRows = transcriptionMap.get(recording.id) ?? [];
+        const primary = resolvePrimaryTranscript(
+            transcriptRows,
+            preferredSource,
+        );
+        for (const transcript of transcriptRows) {
+            const text = decryptText(transcript.text);
+            if (!text) continue;
+            const sourcePath = `${folder}/transcripts/${transcript.source.replace(/[^a-z0-9_-]/gi, "_")}.txt`;
+            archive.append(Buffer.from(text, "utf-8"), { name: sourcePath });
+            entry.transcripts.push({
+                source: transcript.source,
+                provider: transcript.provider,
+                model: transcript.model,
+                language: transcript.detectedLanguage,
+                path: sourcePath,
             });
-            entry.transcript = { included: true, path: transcriptPath };
+            if (transcript === primary) {
+                const transcriptPath = `${folder}/transcript.txt`;
+                archive.append(Buffer.from(text, "utf-8"), {
+                    name: transcriptPath,
+                });
+                entry.transcript = { included: true, path: transcriptPath };
+            }
         }
 
         const enhancement = enhancementMap.get(recording.id);
@@ -293,6 +334,7 @@ export async function buildAndUploadExportArchive(input: {
                             summary: enhancement.summary,
                             actionItems: enhancement.actionItems,
                             keyPoints: enhancement.keyPoints,
+                            source: enhancement.source,
                             provider: enhancement.provider,
                             model: enhancement.model,
                             createdAt: enhancement.createdAt.toISOString(),

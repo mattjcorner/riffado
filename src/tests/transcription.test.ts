@@ -64,13 +64,32 @@ vi.mock("@/lib/plaud/client-factory", () => ({
 
 import { OpenAI } from "openai";
 import { db } from "@/db";
-import { recordings } from "@/db/schema";
+import { recordings, transcriptions } from "@/db/schema";
 import { generateTitleFromTranscription } from "@/lib/ai/generate-title";
 import {
     storeBrowserTranscription,
     transcribeRecording,
 } from "@/lib/transcription/transcribe-recording";
 import { emitEvent } from "@/lib/webhooks/emit";
+
+function referencesColumn(
+    expr: unknown,
+    col: unknown,
+    seen = new Set<unknown>(),
+): boolean {
+    if (expr == null || typeof expr !== "object") return false;
+    if (expr === col) return true;
+    if (seen.has(expr)) return false;
+    seen.add(expr);
+    for (const key of ["queryChunks", "value", "left", "right", "chunks"]) {
+        const value = (expr as Record<string, unknown>)[key];
+        const items = Array.isArray(value) ? value : [value];
+        if (items.some((item) => referencesColumn(item, col, seen))) {
+            return true;
+        }
+    }
+    return false;
+}
 
 describe("Transcription", () => {
     const mockUserId = "user-123";
@@ -576,6 +595,7 @@ describe("Transcription", () => {
             expect(inserted.provider).toBe("browser");
             expect(inserted.model).toBe("whisper-base");
             expect(inserted.detectedLanguage).toBe("fr");
+            expect(inserted.source).toBe("riffado");
             // Text is at-rest-encrypted before storage.
             expect(inserted.text).toBe("v1:encrypted:new transcript text");
             expect(emitEvent).toHaveBeenCalledWith(
@@ -611,6 +631,17 @@ describe("Transcription", () => {
             expect(updated.provider).toBe("browser");
             expect(updated.model).toBe("whisper-small");
             expect(updated.detectedLanguage).toBeNull();
+            expect(updated.source).toBe("riffado");
+            const lookup = harness.tx.select.mock.results[1].value as {
+                from: Mock;
+            };
+            const lookupWhere = lookup.from.mock.results[0].value.where as Mock;
+            expect(
+                referencesColumn(
+                    lookupWhere.mock.calls[0][0],
+                    transcriptions.source,
+                ),
+            ).toBe(true);
             expect(emitEvent).toHaveBeenCalledWith(
                 "transcription.completed",
                 mockUserId,

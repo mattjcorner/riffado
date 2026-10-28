@@ -151,6 +151,7 @@ export async function storeBrowserTranscription(
                     and(
                         eq(transcriptions.recordingId, recordingId),
                         eq(transcriptions.userId, userId),
+                        eq(transcriptions.source, "riffado"),
                     ),
                 )
                 .limit(1);
@@ -165,6 +166,7 @@ export async function storeBrowserTranscription(
                         transcriptionType: "browser",
                         provider: "browser",
                         model,
+                        source: "riffado",
                     })
                     .where(
                         and(
@@ -181,6 +183,7 @@ export async function storeBrowserTranscription(
                     transcriptionType: "browser",
                     provider: "browser",
                     model,
+                    source: "riffado",
                 });
             }
 

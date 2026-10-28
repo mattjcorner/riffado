@@ -104,7 +104,8 @@ model, changeable from the workstation panel. See
 - `src/app/(auth)/` — login, register, OTP screens.
 - `src/app/(docs)/` — this docs site.
 - `src/app/api/` — internal routes (session-authenticated).
-- `src/app/api/v1/` — public, key-authenticated, stable read surface.
+- `src/app/api/v1/` — public, key-authenticated, stable surface (reads,
+  plus transcript and summary writes for keys with the `write` scope).
   See [Public API](./public-api).
 
 ## Multi-process safety

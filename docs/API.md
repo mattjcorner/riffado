@@ -271,7 +271,7 @@ manage API keys.
 
 #### POST `/settings/api-keys`
 
-Create a read-only API key. The raw `key` field is returned once.
+Create an API key. The raw `key` field is returned once.
 
 **Body:**
 ```json
@@ -282,8 +282,9 @@ Create a read-only API key. The raw `key` field is returned once.
 }
 ```
 
-Scopes use string identifiers. v1 supports only `"read"` today; future scopes
-may be added without invalidating existing read keys.
+Scopes use string identifiers. Every key has `"read"`; add `"write"` to allow
+`PUT /v1/recordings/[id]/transcript` and `PUT /v1/recordings/[id]/summary`.
+Unknown scopes are dropped. Keys created without `"write"` stay read-only.
 
 #### DELETE `/settings/api-keys/[id]`
 
@@ -443,13 +444,38 @@ title state changes.
 
 #### GET `/v1/recordings/[id]`
 
-Return the stable recording shape plus inline `transcript` and `summary`
-objects when present.
+Return the stable recording shape plus inline `transcript` (primary),
+`transcripts` (one per source) and `summary` objects when present.
 
 #### GET `/v1/recordings/[id]/transcript`
 
-Return transcript text and provider metadata, or `404` when the recording has
-not been transcribed.
+Return the primary transcript's text, `source` and provider metadata, or `404`
+when the recording has not been transcribed. `?source=riffado|plaud|external`
+selects a specific source.
+
+#### PUT `/v1/recordings/[id]/transcript`
+
+Requires the `write` scope. Store the caller's transcript as the `external`
+source, replacing a previous external transcript; Riffado and Plaud transcripts
+are untouched. Body: exactly one of `text` (string) or `segments`
+(`[{ "speaker": "Alice", "text": "...", "start": 12.5 }]`), plus optional
+`language`, `provider`, `model`. Segments are stored as `[mm:ss] Name: text`
+lines, which the UI renders by speaker. Returns the stored transcript.
+
+#### GET `/v1/recordings/[id]/summary`
+
+Return the summary (`source`, `text`, `key_points`, `action_items`,
+`provider`, `model`, `created_at`), or `404` when there is none.
+
+#### PUT `/v1/recordings/[id]/summary`
+
+Requires the `write` scope. Replace the recording's summary with
+`{ "text": "<markdown>", "key_points"?: [], "action_items"?: [], "provider"?,
+"model"? }`, stored with `source: "external"`. Returns the stored summary.
+
+v1 writes do not emit webhooks, accept at most 2 MiB of JSON, answer `404` for
+a recording that is missing, not yours or deleted, and `410` if it is deleted
+during the write.
 
 #### GET `/v1/recordings/[id]/audio`
 
@@ -517,6 +543,7 @@ fixed windows:
 - 1,200 requests per minute per client IP.
 - 600 requests per minute per authenticated identity (`op_...` key, or user
   session for browser-authenticated calls).
+- 60 writes per minute per authenticated identity, on top of the above.
 
 Rate-limited requests return `429` with `Retry-After`,
 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`

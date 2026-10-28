@@ -17,7 +17,8 @@ Two ways to authenticate to Riffado's HTTP surface:
    under `(app)`, the dashboard, and the internal `/api/*` routes.
 2. **Personal API key** (`op_<24 chars>`). Used by external
    integrations against the `/api/v1/*` surface. Sent as a Bearer
-   token. Read-only scope.
+   token. Read-only unless created with the opt-in `write` scope,
+   which only allows storing a recording's transcript and summary.
 
 Rate limit buckets default to the request's direct client IP. If your
 instance sits behind a reverse proxy that overwrites

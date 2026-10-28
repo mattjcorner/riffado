@@ -1,11 +1,12 @@
 ---
 title: Public API
-description: The /api/v1/* read surface — authentication, endpoints, errors, rate limits.
+description: The /api/v1/* surface — authentication, scopes, endpoints, errors, rate limits.
 ---
 
-The `/api/v1/*` surface is Riffado's public, stable, read-only API.
-Personal API keys authenticate it; integrations like Zapier, n8n, and
-your own scripts call into it.
+The `/api/v1/*` surface is Riffado's public, stable API. It is
+read-only except for two narrow writes: storing your own transcript
+and your own summary for a recording. Personal API keys authenticate
+it; integrations like Zapier, n8n, and your own scripts call into it.
 
 For creating keys and configuring webhooks, see
 [Automation API and webhooks](../guides/automation-and-webhooks).
@@ -24,9 +25,27 @@ Send your personal API key as a Bearer token:
 Authorization: Bearer op_K7vR8x...
 ```
 
-Keys are 27 characters: `op_` + 24 URL-safe random characters. Keys
-carry read-only scope today. Revoked or expired keys are rejected with
-`401 UNAUTHORIZED`. Tokens are HMAC-hashed at rest.
+Keys are 27 characters: `op_` + 24 URL-safe random characters. Revoked
+or expired keys are rejected with `401 UNAUTHORIZED`. Tokens are
+HMAC-hashed at rest.
+
+### Scopes
+
+Every key has the `read` scope. The `write` scope is opt-in: tick
+**Allow writes** when creating the key in Settings → API keys (or send
+`"scopes": ["read", "write"]` to `POST /api/settings/api-keys`). Keys
+created before the scope existed stay read-only. A write with a key
+that lacks `write` is refused:
+
+```json
+{
+  "error": "This API key does not have the write scope",
+  "code": "FORBIDDEN",
+  "details": { "requiredScope": "write" }
+}
+```
+
+A browser session (the Riffado UI) can use every endpoint.
 
 ## Rate limits
 
@@ -34,6 +53,8 @@ Two buckets enforced on every `/api/v1/*` request:
 
 - **Per IP** — 1,200 requests/minute. Rejects unauth'd flooders.
 - **Per authenticated user** — 600 requests/minute.
+
+Writes also consume a third bucket: **60 writes/minute per key**.
 
 Limit responses are JSON with a `Retry-After` header and these
 RateLimit headers:
@@ -73,9 +94,12 @@ Common codes you should handle:
 | `UNAUTHORIZED`           | 401  | Missing, malformed, revoked, or expired key          |
 | `FORBIDDEN`              | 403  | Authenticated but not allowed                        |
 | `ACCOUNT_SUSPENDED`      | 403  | User account is suspended                            |
+| `ACCOUNT_LOCKED`         | 403  | Hosted plan lapsed; writes are refused               |
 | `INVALID_INPUT`          | 400  | A query param or body field failed validation        |
-| `RECORDING_NOT_FOUND`    | 404  | Recording id doesn't exist (or isn't yours)          |
+| `INVALID_INPUT`          | 413  | Write body larger than 2 MiB                         |
+| `RECORDING_NOT_FOUND`    | 404  | Recording id doesn't exist, isn't yours, or was deleted |
 | `NOT_FOUND`              | 404  | Generic — e.g. transcript not yet produced           |
+| `NOT_FOUND`              | 410  | The recording was deleted while a write was running  |
 | `RATE_LIMITED`           | 429  | Hit one of the buckets above                         |
 
 The `error` field is safe to display. Never parse `error`; branch on
@@ -155,9 +179,10 @@ curl -H "Authorization: Bearer op_..." \
   https://your-host/api/v1/recordings/01J...
 ```
 
-Returns the same shape as a list item, plus `transcript` and `summary`
-inline when they exist. Returns `404 RECORDING_NOT_FOUND` if the
-recording doesn't exist or isn't yours.
+Returns the same shape as a list item, plus `transcript` (the primary
+transcript), `transcripts` (one entry per source) and `summary` inline
+when they exist. Returns `404 RECORDING_NOT_FOUND` if the recording
+doesn't exist or isn't yours.
 
 ### Get a transcript
 
@@ -172,6 +197,7 @@ curl -H "Authorization: Bearer op_..." \
 
 ```json
 {
+  "source": "riffado",
   "language": "en",
   "text": "Full plaintext transcript...",
   "provider": "groq",
@@ -180,9 +206,130 @@ curl -H "Authorization: Bearer op_..." \
 }
 ```
 
-Returns `404 NOT_FOUND` if the recording exists but no transcription
-has been produced for it yet. Listen for `transcription.completed`
-webhooks to know when to retry.
+A recording can hold one transcript per `source`: `riffado` (your own
+provider), `plaud` (imported from Plaud), `external` (written through
+this API). Without a query this returns the primary one: the source
+picked under Settings → Transcription → Primary transcript, then
+`external`, then `riffado`. Pass `?source=external` (or `plaud`,
+`riffado`) for a specific one.
+
+Returns `404 NOT_FOUND` if the recording exists but has no transcript
+(or none from the requested source). Listen for
+`transcription.completed` webhooks to know when to retry.
+
+### Store your transcript
+
+```http
+PUT /api/v1/recordings/{id}/transcript
+```
+
+Requires the `write` scope. Stores a transcript you produced yourself
+as the recording's `external` transcript. A second `PUT` replaces it.
+Transcripts from your Riffado provider or from Plaud are never touched;
+the UI shows a source switcher when more than one exists.
+
+Send exactly one of `text` or `segments`:
+
+| Field      | Type     | Notes                                                       |
+| ---------- | -------- | ----------------------------------------------------------- |
+| `text`     | string   | Plain transcript, stored as sent (max 500,000 characters).  |
+| `segments` | array    | Speaker turns: `{ "speaker", "text", "start"? }`, up to 20,000. |
+| `language` | string?  | ISO 639-1 code such as `en` or `pt-BR`.                     |
+| `provider` | string?  | Shown as the transcript's provider. Default `external`.     |
+| `model`    | string?  | Shown as the transcript's model. Default `unknown`.         |
+
+`speaker` is a display name of up to 40 characters, without `:` `[`
+`]` `?` `!` `;` `"` or line breaks (`Alice`, `Dr. Bob Smith`).
+`start` is the turn's offset in seconds. Segments are stored as one
+line per turn, `Name: text`, prefixed with `[mm:ss] ` (or `[hh:mm:ss] `)
+when `start` is given. Riffado shows a transcript by speaker when
+every line has that form, so you can also send it as `text` directly.
+
+```bash
+curl -X PUT -H "Authorization: Bearer op_..." \
+  -H "Content-Type: application/json" \
+  https://your-host/api/v1/recordings/01J.../transcript \
+  -d '{
+    "language": "en",
+    "model": "my-diarizer",
+    "segments": [
+      { "speaker": "Alice", "text": "Let us start with the budget.", "start": 0 },
+      { "speaker": "Bob", "text": "It was approved yesterday.", "start": 4.2 }
+    ]
+  }'
+```
+
+Response (`200`), the stored transcript:
+
+```json
+{
+  "source": "external",
+  "language": "en",
+  "text": "[00:00] Alice: Let us start with the budget.\n[00:04] Bob: It was approved yesterday.",
+  "provider": "external",
+  "model": "my-diarizer",
+  "created_at": "2026-05-13T12:01:23.000Z"
+}
+```
+
+### Get the summary
+
+```http
+GET /api/v1/recordings/{id}/summary
+```
+
+```json
+{
+  "source": "riffado",
+  "text": "## Decisions\n- Ship on Friday",
+  "key_points": ["Budget approved"],
+  "action_items": ["Alice sends the deck"],
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "created_at": "2026-05-13T12:03:00.000Z"
+}
+```
+
+`source` is `riffado` (generated by your provider), `plaud` (imported)
+or `external` (written through this API). `text` is Markdown. Returns
+`404 NOT_FOUND` when the recording has no summary.
+
+### Store your summary
+
+```http
+PUT /api/v1/recordings/{id}/summary
+```
+
+Requires the `write` scope. A recording has one summary, so this
+replaces whatever summary it had (a later **Re-generate** in the UI
+replaces yours in turn). The body mirrors the `GET` shape:
+
+| Field          | Type      | Notes                                         |
+| -------------- | --------- | --------------------------------------------- |
+| `text`         | string    | Markdown, max 200,000 characters.             |
+| `key_points`   | string[]? | Up to 200 items of 2,000 characters each.     |
+| `action_items` | string[]? | Up to 200 items of 2,000 characters each.     |
+| `provider`     | string?   | Default `external`.                           |
+| `model`        | string?   | Default `unknown`.                            |
+
+```bash
+curl -X PUT -H "Authorization: Bearer op_..." \
+  -H "Content-Type: application/json" \
+  https://your-host/api/v1/recordings/01J.../summary \
+  -d '{ "text": "## Decisions\n- Ship on Friday", "action_items": ["Alice sends the deck"] }'
+```
+
+Returns `200` with the stored summary in the `GET` shape, with
+`source: "external"`.
+
+### Writes and webhooks
+
+Writes through this API do **not** emit `transcription.completed` or
+`summary.completed`: the caller already knows, and an automation that
+reacts to those events by writing back would otherwise trigger itself.
+They do bump the recording's `updated_at`, so `updated_since` polling
+sees them. Writes are not run through your AI provider and never cost
+AI credits.
 
 ### Stream audio
 
@@ -218,12 +365,11 @@ curl -L -H "Authorization: Bearer op_..." \
 for unsatisfiable starts (past EOF or `start > end`). Oversized `end`
 values are clamped to `fileSize - 1` per RFC 7233.
 
-## What about writes?
+## What about other writes?
 
-There are no public write endpoints. The `/api/v1/*` surface is
-read-only by design today. If you need to push data *in*, run the
-Riffado UI or sync the source Plaud account via the configured
-sync loop.
+Uploading audio, starting a transcription and generating a summary are
+not part of the public surface yet. Use the Riffado UI or the Plaud
+sync for those.
 
 ## Stability
 

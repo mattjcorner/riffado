@@ -7,8 +7,8 @@ Riffado exposes a small, stable automation surface for external
 tools — Zapier-style integrations, n8n flows, your own scripts. Two
 moving parts:
 
-- **Personal API keys** authenticate read access to the `/api/v1/*`
-  surface.
+- **Personal API keys** authenticate the `/api/v1/*` surface. Keys
+  are read-only unless you allow writes.
 - **Webhook endpoints** push events at your own server when something
   interesting happens (a new recording, a finished transcription).
 
@@ -22,8 +22,9 @@ optionally an expiry, and copy the key shown once. The key is shown
 exactly once — store it in your password manager or the secret manager
 of whatever tool will use it.
 
-Format: `op_<24 url-safe chars>` (e.g. `op_K7vR8x...`). Keys carry
-read-only scope today; writes are not part of the public surface.
+Format: `op_<24 url-safe chars>` (e.g. `op_K7vR8x...`). Keys are
+read-only by default. Turn on **Allow writes** when creating a key that
+should store transcripts and summaries; existing keys stay read-only.
 
 You authenticate by sending the key as a Bearer token:
 
@@ -141,7 +142,19 @@ and visible in **Settings → Developer → Webhooks → Recent deliveries**.
 
 ## What writes look like
 
-There aren't any public write endpoints yet. The current `/api/v1/*`
-surface is read-only by design: list recordings, get a recording, get
-its transcript, stream its audio. If you need to push data *in*, run
-the Riffado UI or sync the source Plaud account.
+A key with the `write` scope can store two things for a recording:
+
+- **Your own transcript**, with named speakers if you have them
+  (`PUT /api/v1/recordings/{id}/transcript`). It is kept as a separate
+  `external` transcript next to the ones Riffado or Plaud made.
+- **Your own summary** (`PUT /api/v1/recordings/{id}/summary`). It
+  replaces the recording's summary.
+
+This suits a pipeline that transcribes, diarizes or summarizes outside
+Riffado and wants the result in the Riffado UI and in exports. These
+writes don't emit webhooks, so a flow that writes back when it receives
+`transcription.completed` doesn't loop. See
+[Public API](../reference/public-api) for the request formats.
+
+Uploading audio and starting transcriptions or summaries are not part
+of the public surface yet.

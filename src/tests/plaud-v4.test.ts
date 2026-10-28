@@ -24,6 +24,7 @@ import {
     selectContentItems,
 } from "@/lib/plaud/content";
 import {
+    applyV4Meta,
     findV4AudioUrl,
     md5Hex,
     normalizeV4Recording,
@@ -33,6 +34,7 @@ import type { PlaudV4FileDetail } from "@/types/plaud";
 import {
     V3_MIGRATED_BODY,
     V4_AUDIO_URL,
+    V4_META,
     V4_POLISHED_URL,
     V4_SUMMARY_BODY,
     V4_SUMMARY_URL,
@@ -165,9 +167,21 @@ describe("v4DetailToFileDetail", () => {
         expect(isReady(summary)).toBe(true);
         expect(summary?.data_link).toBe(V4_SUMMARY_URL);
         expect(parseTranscript(V4_TRANSCRIPT_BODY).text).toBe(
-            "Speaker 1: Hello everyone.\nSpeaker 2: Second point.",
+            "Hello everyone.\nSecond point.",
         );
+        expect(parseTranscript(V4_TRANSCRIPT_BODY).segments[1]).toEqual({
+            start_time: 1500,
+            end_time: 3000,
+            speaker: undefined,
+            content: "Second point.",
+        });
+        expect(parseTranscript([]).text).toBe("");
         expect(parseSummary(V4_SUMMARY_BODY).summary).toContain("First point");
+    });
+
+    it("skips the null POLISHED_TRANSCRIPT and uses TRANSCRIPT", () => {
+        const { transcript } = selectContentItems(v4DetailToFileDetail(detail));
+        expect(transcript?.data_link).toBe(V4_TRANSCRIPT_URL);
     });
 
     it("prefers the polished transcript and skips objects without a URL", () => {
@@ -194,6 +208,19 @@ describe("v4DetailToFileDetail", () => {
                 objects: [{ object_type: "AUDIO", mime_type: "audio/ogg" }],
             }),
         ).toBe(undefined);
+    });
+});
+
+describe("applyV4Meta", () => {
+    it("takes serial, start time and missing duration from the detail meta", () => {
+        const base = normalizeV4Recording(v4ListItem({ duration_ms: 0 }));
+        if (!base) throw new Error("fixture did not normalize");
+        const rec = applyV4Meta(base, V4_META);
+        expect(rec.serial_number).toBe("SN0000000001");
+        expect(rec.start_time).toBe(V4_META.start_time);
+        expect(rec.duration).toBe(125000);
+        expect(rec.end_time).toBe(V4_META.start_time + 125000);
+        expect(applyV4Meta(base, undefined)).toBe(base);
     });
 });
 
@@ -384,27 +411,35 @@ describe("PlaudClient on a 4.0 account", () => {
         expect(header(s3.init, "authorization")).toBe(null);
     });
 
-    it("falls back to the 3.0 temp-url when the detail has no audio URL", async () => {
+    it("serves getTempUrl from the detail and keeps its meta", async () => {
         migratedV3();
-        on("GET", "/file-app/v4/files/detail/f1", () =>
-            json(v4DetailBody([{ object_type: "AUDIO" }])),
+        on("GET", "/file-app/v4/recordings/all", () =>
+            json(v4ListBody([v4ListItem()])),
         );
-        on("GET", "/file/temp-url/f1", () =>
-            json({ status: 0, temp_url: V4_AUDIO_URL }),
-        );
-        on("GET", "/audio.ogg", () => new Response(Buffer.from("OggS")));
+        on("GET", "/file-app/v4/files/detail/f1", () => json(v4DetailBody()));
         const client = new PlaudClient(UT, API_BASE, V4_WORKSPACE_ID);
-        await client.getRecordings(0, 50).catch(() => undefined);
-        expect(client.platform).toBe("v4");
-        expect((await client.downloadRecording("f1", false)).toString()).toBe(
-            "OggS",
-        );
+        await client.getRecordings(0, 50);
+
+        const res = await client.getTempUrl("f1", false);
+        expect(res.temp_url).toBe(V4_AUDIO_URL);
+        expect(client.v4MetaFor("f1")).toEqual(V4_META);
+        expect(callsTo("/file/temp-url/f1")).toHaveLength(0);
     });
 
-    it("reports audio-not-ready when neither route has a URL", async () => {
+    it("reports audio-not-ready when the AUDIO content_url is null", async () => {
         on("GET", "/file/temp-url/f1", () => json(V3_MIGRATED_BODY));
         on("GET", "/file-app/v4/files/detail/f1", () =>
-            json(v4DetailBody([{ object_type: "AUDIO" }])),
+            json(
+                v4DetailBody([
+                    {
+                        object_type: "AUDIO",
+                        mime_type: "audio/ogg",
+                        content_url: null,
+                        object_size: 0,
+                        version_ms: 1761000500000,
+                    },
+                ]),
+            ),
         );
         const client = new PlaudClient(UT, API_BASE, V4_WORKSPACE_ID);
         const err = await client
@@ -413,6 +448,29 @@ describe("PlaudClient on a 4.0 account", () => {
         expect(err).toBeInstanceOf(AppError);
         expect((err as AppError).details?.reason).toBe(PLAUD_AUDIO_NOT_READY);
         expect(client.platform).toBe("v4");
+
+        await client.downloadRecording("f1", false).catch(() => undefined);
+        expect(callsTo("/file/temp-url/f1")).toHaveLength(1);
+    });
+
+    it("fetches transcript and summary content without Plaud auth", async () => {
+        on("GET", "/transcript", () => json(V4_TRANSCRIPT_BODY));
+        on("GET", "/summary", () => new Response(V4_SUMMARY_BODY));
+        const client = new PlaudClient(UT, API_BASE, V4_WORKSPACE_ID);
+
+        const transcript = parseTranscript(
+            await client.fetchContentLink(V4_TRANSCRIPT_URL),
+        );
+        const summary = parseSummary(
+            await client.fetchContentLink(V4_SUMMARY_URL),
+        );
+
+        expect(transcript.text).toBe("Hello everyone.\nSecond point.");
+        expect(summary.summary).toContain("Second point");
+        for (const path of ["/transcript", "/summary"]) {
+            const [call] = callsTo(path);
+            expect(header(call.init, "authorization")).toBe(null);
+        }
     });
 
     it("falls back to /device-app/device/list", async () => {

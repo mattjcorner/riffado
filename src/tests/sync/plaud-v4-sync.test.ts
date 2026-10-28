@@ -65,7 +65,7 @@ import { db } from "@/db";
 import { createPlaudClient } from "@/lib/plaud/client-factory";
 import { md5Hex, normalizeV4Recording } from "@/lib/plaud/v4";
 import { syncRecordingsForUser } from "@/lib/sync/sync-recordings";
-import { v4ListItem } from "../fixtures/plaud-v4";
+import { V4_META, v4ListItem } from "../fixtures/plaud-v4";
 
 const USER_ID = "user-v4";
 
@@ -135,6 +135,47 @@ describe("sync of a Plaud 4.0 recording", () => {
                 fileMd5: md5Hex(audio),
                 plaudVersion: "1761000500000",
                 deviceSn: "",
+            }),
+        );
+    });
+
+    it("uses the detail meta for device serial and start time on 4.0", async () => {
+        const audio = oggBytes();
+        const recording = normalizeV4Recording(v4ListItem());
+        (createPlaudClient as Mock).mockResolvedValue({
+            platform: "v4",
+            getRecordings: vi
+                .fn()
+                .mockResolvedValue({ data_file_list: [recording] }),
+            downloadRecording: vi.fn().mockResolvedValue(audio),
+            v4MetaFor: vi.fn().mockReturnValue(V4_META),
+            workspaceId: "ws_000000000000",
+        });
+        stubSelects([
+            [{ id: "conn-1", userId: USER_ID, bearerToken: "tok" }],
+            [{ id: "settings-1" }],
+            [{ email: "t@example.com" }],
+            [],
+            [],
+        ]);
+        const values = vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "new-rec" }]),
+        });
+        (db.insert as Mock).mockReturnValue({ values });
+        (db.update as Mock).mockReturnValue({
+            set: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(undefined),
+            }),
+        });
+
+        const result = await syncRecordingsForUser(USER_ID);
+
+        expect(result.errors).toEqual([]);
+        expect(values).toHaveBeenCalledWith(
+            expect.objectContaining({
+                deviceSn: "SN0000000001",
+                startTime: new Date(V4_META.start_time),
+                endTime: new Date(V4_META.start_time + 125000),
             }),
         );
     });

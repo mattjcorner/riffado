@@ -29,7 +29,9 @@ git clone --branch feat/plaud-4.0-v0.6.4 riffado-plaud-4.0.bundle riffado-v4
 `scripts/plaud-v4-probe.ts` reads the stored Plaud connection with the
 container's own `DATABASE_URL` / `ENCRYPTION_KEY`, decrypts the token in
 process, and logs one line per step. It never prints tokens, emails,
-recording names or presigned URLs. Writes nothing.
+recording names or presigned URLs. Writes nothing. Plaud calls carry the
+app's browser-style `User-Agent`, `Origin` and `Referer` (Plaud answers 403
+without them).
 
 ```sh
 docker cp scripts/plaud-v4-probe.ts riffado-app:/tmp/plaud-v4-probe.ts

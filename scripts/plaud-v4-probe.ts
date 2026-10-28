@@ -94,7 +94,17 @@ async function main(): Promise<void> {
         `api=${host(apiBase)} cachedWorkspace=${conn.workspace_id ? "yes" : "no"} storedEmail=${conn.plaud_email ? "yes" : "no"}`,
     );
 
-    const base = { Authorization: `Bearer ${ut}`, "Content-Type": "application/json" };
+    // Same browser-shaped headers the app sends (PLAUD_USER_AGENT from
+    // src/lib/plaud/servers.ts, Origin/Referer from src/lib/plaud/fetch.ts);
+    // without them Plaud answers 403. Standalone script, so inlined.
+    const base = {
+        Authorization: `Bearer ${ut}`,
+        "Content-Type": "application/json",
+        "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Origin: "https://web.plaud.ai",
+        Referer: "https://web.plaud.ai/",
+    };
     const get = async (path: string, headers: Record<string, string> = {}) => {
         const res = await fetch(`${apiBase}${path}`, { headers: { ...base, ...headers } });
         let body: Json = {};

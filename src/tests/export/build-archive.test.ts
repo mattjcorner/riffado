@@ -309,6 +309,53 @@ describe("buildAndUploadExportArchive", () => {
         });
     });
 
+    it("keeps every byte when storage starts reading the stream late", async () => {
+        class SlowStorage extends FakeStorage {
+            override async uploadStream(
+                key: string,
+                stream: Readable,
+                contentType: string,
+            ): Promise<string> {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                return super.uploadStream(key, stream, contentType);
+            }
+        }
+        const slow = new SlowStorage();
+        slow.files.set("audio/rec-1.mp3", Buffer.from("fake-audio-bytes-1"));
+        mockSelectSequence([
+            [
+                {
+                    id: "rec-1",
+                    userId: "user-1",
+                    filename: "enc-filename",
+                    startTime: new Date("2026-01-01T00:00:00Z"),
+                    endTime: new Date("2026-01-01T00:01:00Z"),
+                    duration: 60000,
+                    filesize: 18,
+                    deviceSn: "SN123",
+                    storagePath: "audio/rec-1.mp3",
+                },
+            ],
+            [],
+            [],
+        ]);
+
+        const result = await buildAndUploadExportArchive({
+            userId: "user-1",
+            storage: slow,
+            storageKey: "exports/user-1/job-slow.zip",
+        });
+
+        const uploaded = slow.uploaded as Buffer;
+        expect(uploaded.length).toBe(result.fileSize);
+        const entries = await readZipEntries(uploaded);
+        expect(
+            [...entries.entries()]
+                .find(([n]) => n.endsWith("/audio.mp3"))?.[1]
+                .buffer.toString("utf-8"),
+        ).toBe("fake-audio-bytes-1");
+    });
+
     it("skips missing audio without failing the whole export, and notes why in the manifest", async () => {
         // No file registered at this storagePath -- exists() returns false.
         mockSelectSequence([

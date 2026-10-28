@@ -1,4 +1,4 @@
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, type Readable, Transform } from "node:stream";
 import { ZipArchive } from "archiver";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
@@ -132,13 +132,17 @@ export async function buildAndUploadExportArchive(input: {
             : "plaud";
 
     const archive = new ZipArchive({ zlib: { level: 6 } });
-    const passthrough = new PassThrough();
     // Count bytes as they flow through rather than re-reading the
-    // finished archive back out of storage just to learn its size.
+    // finished archive back out of storage just to learn its size. A
+    // Transform, not a "data" listener: a listener switches the stream to
+    // flowing mode and drops whatever is emitted before storage attaches.
     let fileSize = 0;
-    passthrough.on("data", (chunk: Buffer) => {
-        fileSize += chunk.length;
-        onProgress?.();
+    const passthrough = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+            fileSize += chunk.length;
+            onProgress?.();
+            callback(null, chunk);
+        },
     });
     archive.pipe(passthrough);
 

@@ -151,9 +151,15 @@ describe("API keys", () => {
         ).toBe(false);
     });
 
-    it("normalizes scopes to read-only", () => {
-        expect(normalizeApiKeyScopes(["read", "write", 1])).toEqual(["read"]);
+    it("normalizes scopes to read, plus write only when asked for", () => {
+        expect(normalizeApiKeyScopes(["read", "write", 1])).toEqual([
+            "read",
+            "write",
+        ]);
+        expect(normalizeApiKeyScopes(["write"])).toEqual(["read", "write"]);
+        expect(normalizeApiKeyScopes(["admin", "read"])).toEqual(["read"]);
         expect(normalizeApiKeyScopes([])).toEqual(["read"]);
-        expect(normalizeApiKeyScopes("read")).toEqual(["read"]);
+        expect(normalizeApiKeyScopes("write")).toEqual(["read"]);
+        expect(normalizeApiKeyScopes(undefined)).toEqual(["read"]);
     });
 });

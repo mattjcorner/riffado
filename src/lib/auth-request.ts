@@ -6,10 +6,17 @@ import { auth } from "@/lib/auth";
 import { env } from "@/lib/env";
 import { AppError, ErrorCode } from "@/lib/errors";
 
+/** Scopes a personal API key can carry. `read` is always granted. */
+export const API_KEY_SCOPES = ["read", "write"] as const;
+
+export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
+
 export type AuthenticatedRequest = {
     user: { id: string };
     via: "session" | "api-key";
     apiKeyId?: string;
+    /** Set for API-key requests; a browser session holds every scope. */
+    scopes?: ApiKeyScope[];
 };
 
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
@@ -122,12 +129,39 @@ export function isApiKeyActive(
     return true;
 }
 
-export function normalizeApiKeyScopes(scopes: unknown): string[] {
-    if (!Array.isArray(scopes)) return ["read"];
-    const normalized = scopes.filter((scope): scope is string => {
-        return scope === "read";
-    });
-    return normalized.length > 0 ? normalized : ["read"];
+/**
+ * Canonical scope list for storage and checks: always includes `read`,
+ * adds `write` only when explicitly requested, drops anything unknown.
+ */
+export function normalizeApiKeyScopes(scopes: unknown): ApiKeyScope[] {
+    const requested = Array.isArray(scopes) ? scopes : [];
+    return API_KEY_SCOPES.filter(
+        (scope) => scope === "read" || requested.includes(scope),
+    );
+}
+
+/** Whether the request may use `scope`. Browser sessions hold every scope. */
+export function hasScope(
+    authn: AuthenticatedRequest,
+    scope: ApiKeyScope,
+): boolean {
+    if (authn.via === "session") return true;
+    return normalizeApiKeyScopes(authn.scopes).includes(scope);
+}
+
+/** Throw `403 FORBIDDEN` unless the request holds `scope`. */
+export function requireScope(
+    authn: AuthenticatedRequest,
+    scope: ApiKeyScope,
+): void {
+    if (!hasScope(authn, scope)) {
+        throw new AppError(
+            ErrorCode.FORBIDDEN,
+            `This API key does not have the ${scope} scope`,
+            403,
+            { requiredScope: scope },
+        );
+    }
 }
 
 function getBearerToken(request: Request): string | null {
@@ -195,6 +229,7 @@ export async function authenticateRequest(
             user: { id: apiKey.userId },
             via: "api-key",
             apiKeyId: apiKey.id,
+            scopes: normalizeApiKeyScopes(apiKey.scopes),
         };
     }
 

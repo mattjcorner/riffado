@@ -113,6 +113,7 @@ describe("Issue #108 - API keys polish", () => {
             user: { id: "user-108" },
             via: "api-key",
             apiKeyId: "api-key-108",
+            scopes: ["read"],
         });
         expect(updateSet).toHaveBeenCalledWith(
             expect.objectContaining({

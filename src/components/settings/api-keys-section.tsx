@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { getApiErrorMessage } from "@/lib/api-errors";
 
 type ApiKey = {
@@ -39,6 +40,7 @@ export function ApiKeysSection() {
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [name, setName] = useState("");
     const [expiresAt, setExpiresAt] = useState("");
+    const [allowWrite, setAllowWrite] = useState(false);
     const [createdKey, setCreatedKey] = useState<string | null>(null);
 
     const refreshApiKeys = useCallback(async () => {
@@ -78,7 +80,7 @@ export function ApiKeysSection() {
                     expiresAt: expiresAt
                         ? new Date(expiresAt).toISOString()
                         : null,
-                    scopes: ["read"],
+                    scopes: allowWrite ? ["read", "write"] : ["read"],
                 }),
             });
 
@@ -103,6 +105,7 @@ export function ApiKeysSection() {
             setCreatedKey(data.key);
             setName("");
             setExpiresAt("");
+            setAllowWrite(false);
         } catch (error) {
             toast.error(
                 error instanceof Error
@@ -192,6 +195,11 @@ export function ApiKeysSection() {
                                     <span className="rounded border px-2 py-0.5 font-mono text-xs text-muted-foreground">
                                         {apiKey.keyPrefix}
                                     </span>
+                                    {apiKey.scopes.includes("write") && (
+                                        <span className="rounded border px-2 py-0.5 text-xs text-muted-foreground">
+                                            Read and write
+                                        </span>
+                                    )}
                                     {apiKey.revokedAt && (
                                         <span className="rounded border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs text-destructive">
                                             Revoked
@@ -284,6 +292,23 @@ export function ApiKeysSection() {
                                     onChange={(event) =>
                                         setExpiresAt(event.target.value)
                                     }
+                                    disabled={isCreating}
+                                />
+                            </div>
+                            <div className="flex items-start justify-between gap-4">
+                                <div className="space-y-0.5">
+                                    <Label htmlFor="api-key-write">
+                                        Allow writes
+                                    </Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        Lets this key store transcripts and
+                                        summaries. Keys are read-only otherwise.
+                                    </p>
+                                </div>
+                                <Switch
+                                    id="api-key-write"
+                                    checked={allowWrite}
+                                    onCheckedChange={setAllowWrite}
                                     disabled={isCreating}
                                 />
                             </div>

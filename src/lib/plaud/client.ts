@@ -4,13 +4,31 @@ import type {
     PlaudApiError,
     PlaudDeviceListResponse,
     PlaudFileDetailResponse,
+    PlaudRecording,
     PlaudRecordingsResponse,
     PlaudTempUrlResponse,
+    PlaudV4Envelope,
+    PlaudV4FileDetail,
+    PlaudV4RecordingsPage,
 } from "@/types/plaud";
 import { plaudFetch } from "./fetch";
 import { safeParseJson } from "./parse";
 import { DEFAULT_SERVER_KEY, PLAUD_SERVERS, PLAUD_USER_AGENT } from "./servers";
-import { resolveWorkspaceToken } from "./workspace";
+import {
+    findV4AudioUrl,
+    isV4MigratedBody,
+    normalizeV4Recording,
+    PLAUD_V4_MAX_PAGE_SIZE,
+    PLAUD_V4_MIGRATED_STATUS,
+    type PlaudPlatform,
+    v4DetailToFileDetail,
+    v4ScopeHeaders,
+} from "./v4";
+import {
+    listPlaudWorkspaces,
+    pickPersonalWorkspaceId,
+    resolveWorkspaceToken,
+} from "./workspace";
 
 export interface PlaudUpdateFilenameResponse {
     status: number;
@@ -48,6 +66,27 @@ function plaudHttpError(status: number, msg: string): AppError {
     });
 }
 
+function migratedError(msg?: string): AppError {
+    return new AppError(
+        ErrorCode.PLAUD_API_ERROR,
+        msg || "Account migrated to Plaud 4.0",
+        400,
+        { plaudCode: PLAUD_V4_MIGRATED_STATUS },
+    );
+}
+
+function isMigratedError(err: unknown): boolean {
+    return (
+        err instanceof AppError &&
+        err.details?.plaudCode === PLAUD_V4_MIGRATED_STATUS
+    );
+}
+
+const V4_NODE_VERSION_CONFLICT = -1800313;
+
+/** Thrown when a 4.0 recording has no downloadable audio yet. */
+export const PLAUD_AUDIO_NOT_READY = "audio_not_ready";
+
 export class PlaudClient {
     private readonly userToken: string;
     private readonly apiBase: string;
@@ -55,6 +94,8 @@ export class PlaudClient {
     private resolvedWorkspaceId?: string;
     private workspaceFetchInFlight?: Promise<void>;
     private workspaceFallbackToUt = false;
+    private detectedPlatform?: PlaudPlatform;
+    private readonly v4Cursors = new Map<string, string | null>();
 
     constructor(
         userToken: string,
@@ -72,6 +113,53 @@ export class PlaudClient {
 
     get usingUserTokenFallback(): boolean {
         return this.workspaceFallbackToUt;
+    }
+
+    /**
+     * Plaud platform this account answered on: `v3` (`/file/*`) or `v4`
+     * (`/file-app/v4/*`, accounts migrated to Plaud 4.0). `undefined` until
+     * the first platform-specific call.
+     */
+    get platform(): PlaudPlatform | undefined {
+        return this.detectedPlatform;
+    }
+
+    /**
+     * Run the 3.0 call; when Plaud answers -1800907 (in-band or as an error
+     * body) switch this client to 4.0 for the rest of its life and run the
+     * 4.0 call instead.
+     */
+    private async onPlatform<T>(
+        v3: () => Promise<T>,
+        v4: () => Promise<T>,
+    ): Promise<T> {
+        if (this.detectedPlatform === "v4") return v4();
+        try {
+            const result = await v3();
+            if (!isV4MigratedBody(result)) {
+                this.detectedPlatform ??= "v3";
+                return result;
+            }
+        } catch (err) {
+            if (!isMigratedError(err)) throw err;
+        }
+        this.markV4();
+        return v4();
+    }
+
+    private markV4(): void {
+        if (this.detectedPlatform === "v4") return;
+        this.detectedPlatform = "v4";
+        console.info(
+            "[plaud] account is on Plaud 4.0, using /file-app/v4 endpoints",
+        );
+    }
+
+    private async resolveV4WorkspaceId(): Promise<string> {
+        if (this.resolvedWorkspaceId) return this.resolvedWorkspaceId;
+        const list = await listPlaudWorkspaces(this.userToken, this.apiBase);
+        this.resolvedWorkspaceId = pickPersonalWorkspaceId(list);
+        return this.resolvedWorkspaceId;
     }
 
     private async ensureWorkspaceToken(): Promise<void> {
@@ -108,10 +196,18 @@ export class PlaudClient {
         endpoint: string,
         options?: RequestInit,
         retryCount = 0,
+        platform: PlaudPlatform = "v3",
     ): Promise<T> {
-        await this.ensureWorkspaceToken();
-
-        const bearer = this.workspaceToken ?? this.userToken;
+        let bearer: string;
+        let scopeHeaders: Record<string, string> = {};
+        if (platform === "v4") {
+            // 4.0 is scoped by header and rejects the workspace token.
+            bearer = this.userToken;
+            scopeHeaders = v4ScopeHeaders(await this.resolveV4WorkspaceId());
+        } else {
+            await this.ensureWorkspaceToken();
+            bearer = this.workspaceToken ?? this.userToken;
+        }
         const url = `${this.apiBase}${endpoint}`;
 
         try {
@@ -119,6 +215,7 @@ export class PlaudClient {
                 ...options,
                 headers: {
                     ...options?.headers,
+                    ...scopeHeaders,
                     Authorization: `Bearer ${bearer}`,
                     "Content-Type": "application/json",
                     "User-Agent": PLAUD_USER_AGENT,
@@ -132,7 +229,12 @@ export class PlaudClient {
                         ? Number.parseInt(retryAfter, 10) * 1000
                         : INITIAL_RETRY_DELAY * 2 ** retryCount;
                     await sleep(delay);
-                    return this.request<T>(endpoint, options, retryCount + 1);
+                    return this.request<T>(
+                        endpoint,
+                        options,
+                        retryCount + 1,
+                        platform,
+                    );
                 }
                 const retryAfter = response.headers.get("Retry-After");
                 throw new AppError(
@@ -158,9 +260,15 @@ export class PlaudClient {
                 ) {
                     const delay = INITIAL_RETRY_DELAY * 2 ** retryCount;
                     await sleep(delay);
-                    return this.request<T>(endpoint, options, retryCount + 1);
+                    return this.request<T>(
+                        endpoint,
+                        options,
+                        retryCount + 1,
+                        platform,
+                    );
                 }
 
+                if (isV4MigratedBody(error)) throw migratedError(error.msg);
                 throw plaudHttpError(response.status, upstreamMsg);
             }
 
@@ -173,7 +281,12 @@ export class PlaudClient {
             ) {
                 const delay = INITIAL_RETRY_DELAY * 2 ** retryCount;
                 await sleep(delay);
-                return this.request<T>(endpoint, options, retryCount + 1);
+                return this.request<T>(
+                    endpoint,
+                    options,
+                    retryCount + 1,
+                    platform,
+                );
             }
 
             if (error instanceof AppError) throw error;
@@ -194,8 +307,17 @@ export class PlaudClient {
      * actionable `PLAUD_API_ERROR` instead.
      */
     async listDevices(): Promise<PlaudDeviceListResponse> {
-        const body =
-            await this.request<PlaudDeviceListResponse>("/device/list");
+        const body = await this.onPlatform(
+            () => this.request<PlaudDeviceListResponse>("/device/list"),
+            // 4.0 serves the device list in the 3.0 envelope.
+            () =>
+                this.request<PlaudDeviceListResponse>(
+                    "/device-app/device/list",
+                    undefined,
+                    0,
+                    "v4",
+                ),
+        );
         if (body?.status !== 0 || !Array.isArray(body.data_devices)) {
             throw new AppError(
                 ErrorCode.PLAUD_API_ERROR,
@@ -208,6 +330,14 @@ export class PlaudClient {
         return body;
     }
 
+    /**
+     * List recordings in the 3.0 response shape. On a 4.0 account this pages
+     * `/file-app/v4/recordings/all` by cursor and maps each item with
+     * `normalizeV4Recording`; `skip` is translated to the cursor remembered
+     * from the previous page, so callers must page sequentially with `skip`
+     * a multiple of `limit`. 4.0 has no trash listing, so `isTrash=1` returns
+     * an empty page there.
+     */
     async getRecordings(
         skip: number = 0,
         limit: number = 99999,
@@ -223,8 +353,176 @@ export class PlaudClient {
             is_desc: isDesc.toString(),
         });
 
-        return this.request<PlaudRecordingsResponse>(
-            `/file/simple/web?${params.toString()}`,
+        return this.onPlatform(
+            async () => {
+                const body = await this.request<PlaudRecordingsResponse>(
+                    `/file/simple/web?${params.toString()}`,
+                );
+                if (
+                    !isV4MigratedBody(body) &&
+                    !Array.isArray(body?.data_file_list)
+                ) {
+                    throw new AppError(
+                        ErrorCode.PLAUD_API_ERROR,
+                        body?.msg ||
+                            "Plaud returned an invalid recording list response.",
+                        400,
+                        { plaudStatus: body?.status },
+                    );
+                }
+                return body;
+            },
+            () => this.getRecordingsV4(skip, limit, isTrash, sortBy, isDesc),
+        );
+    }
+
+    private async getRecordingsV4(
+        skip: number,
+        limit: number,
+        isTrash: number,
+        sortBy: string,
+        isDesc: boolean,
+    ): Promise<PlaudRecordingsResponse> {
+        const empty: PlaudRecordingsResponse = {
+            status: 0,
+            msg: "",
+            data_file_total: 0,
+            data_file_list: [],
+        };
+        if (isTrash) return empty;
+
+        const pageSize = Math.min(
+            Math.max(1, Math.floor(limit)),
+            PLAUD_V4_MAX_PAGE_SIZE,
+        );
+        const sort = sortBy === "edit_time" ? "updated" : "created";
+        const order = isDesc ? "desc" : "asc";
+        const keyFor = (offset: number) =>
+            `${sort}:${order}:${pageSize}:${offset}`;
+
+        let cursor: string | null | undefined;
+        if (skip > 0) {
+            cursor = this.v4Cursors.get(keyFor(skip));
+            if (cursor === undefined) {
+                // No remembered cursor: walk forward from the first page.
+                let offset = 0;
+                cursor = undefined;
+                while (offset < skip) {
+                    const page = await this.fetchV4RecordingsPage(
+                        cursor ?? undefined,
+                        pageSize,
+                        sort,
+                        order,
+                    );
+                    offset += pageSize;
+                    this.v4Cursors.set(keyFor(offset), page.nextCursor);
+                    cursor = page.nextCursor;
+                    if (cursor === null) break;
+                }
+            }
+            if (cursor === null) return empty;
+        }
+
+        const page = await this.fetchV4RecordingsPage(
+            cursor ?? undefined,
+            pageSize,
+            sort,
+            order,
+        );
+        this.v4Cursors.set(keyFor(skip + pageSize), page.nextCursor);
+
+        return {
+            status: 0,
+            msg: "",
+            data_file_total: page.recordings.length,
+            data_file_list: page.recordings,
+        };
+    }
+
+    private async fetchV4RecordingsPage(
+        cursor: string | undefined,
+        pageSize: number,
+        sort: string,
+        order: string,
+    ): Promise<{ recordings: PlaudRecording[]; nextCursor: string | null }> {
+        const params = new URLSearchParams({
+            sort_by: sort,
+            sort_order: order,
+            page_size: pageSize.toString(),
+        });
+        if (cursor) params.set("cursor", cursor);
+
+        const data = await this.requestV4<PlaudV4RecordingsPage>(
+            `/file-app/v4/recordings/all?${params.toString()}`,
+        );
+        if (!Array.isArray(data.items)) {
+            throw new AppError(
+                ErrorCode.PLAUD_API_ERROR,
+                "Plaud 4.0 returned an invalid recording list response.",
+                400,
+            );
+        }
+        const recordings: PlaudRecording[] = [];
+        for (const item of data.items) {
+            const normalized = normalizeV4Recording(item);
+            if (normalized) recordings.push(normalized);
+        }
+        const next =
+            typeof data.next_cursor === "string" && data.next_cursor
+                ? data.next_cursor
+                : null;
+        // A cursor that does not advance would page forever.
+        return {
+            recordings,
+            nextCursor: next && next !== cursor ? next : null,
+        };
+    }
+
+    /**
+     * GET/PATCH a `/file-app/v4/*` endpoint and unwrap `data`. A negative
+     * in-band `status` is an error: auth-shaped messages map to
+     * `PLAUD_INVALID_TOKEN`, everything else to `PLAUD_API_ERROR` with the
+     * in-band code in `details.plaudCode`.
+     */
+    private async requestV4<T>(
+        endpoint: string,
+        options?: RequestInit,
+    ): Promise<T> {
+        const body = await this.request<PlaudV4Envelope<T>>(
+            endpoint,
+            options,
+            0,
+            "v4",
+        );
+        const status = body?.status;
+        if (typeof status === "number" && status < 0) {
+            const msg = body.msg || `Plaud 4.0 error ${status}`;
+            if (/expired|token|unauthori[sz]ed/i.test(msg)) {
+                throw new AppError(
+                    ErrorCode.PLAUD_INVALID_TOKEN,
+                    "Plaud rejected the access token. Reconnect your Plaud account.",
+                    401,
+                    { plaudCode: status, plaudMessage: msg },
+                );
+            }
+            throw new AppError(ErrorCode.PLAUD_API_ERROR, msg, 400, {
+                plaudCode: status,
+            });
+        }
+        if (!body?.data || typeof body.data !== "object") {
+            throw new AppError(
+                ErrorCode.PLAUD_API_ERROR,
+                "Plaud 4.0 returned a response without data.",
+                400,
+            );
+        }
+        return body.data;
+    }
+
+    /** Raw 4.0 file detail (`/file-app/v4/files/detail/{id}`). */
+    async getV4FileDetail(fileId: string): Promise<PlaudV4FileDetail> {
+        return this.requestV4<PlaudV4FileDetail>(
+            `/file-app/v4/files/detail/${encodeURIComponent(fileId)}`,
         );
     }
 
@@ -241,16 +539,59 @@ export class PlaudClient {
         );
     }
 
+    /**
+     * Presigned audio URL for a 4.0 recording: the detail's `AUDIO` object,
+     * else the 3.0 temp-url endpoint. Throws `PLAUD_API_ERROR` with
+     * `details.reason === PLAUD_AUDIO_NOT_READY` when neither has one (Plaud
+     * has not pulled the audio off the device yet).
+     */
+    async getV4AudioUrl(fileId: string, preferOpus: boolean): Promise<string> {
+        const fromDetail = findV4AudioUrl(await this.getV4FileDetail(fileId));
+        if (fromDetail) return fromDetail;
+
+        try {
+            const legacy = await this.getTempUrl(fileId, preferOpus);
+            const url =
+                preferOpus && legacy?.temp_url_opus
+                    ? legacy.temp_url_opus
+                    : legacy?.temp_url;
+            if (!isV4MigratedBody(legacy) && url) return url;
+        } catch (err) {
+            if (
+                err instanceof AppError &&
+                err.code === ErrorCode.PLAUD_INVALID_TOKEN
+            ) {
+                throw err;
+            }
+        }
+        throw new AppError(
+            ErrorCode.PLAUD_API_ERROR,
+            "Plaud has no downloadable audio for this recording yet. It will be retried on the next sync.",
+            409,
+            { reason: PLAUD_AUDIO_NOT_READY },
+        );
+    }
+
     async downloadRecording(
         fileId: string,
         preferOpus: boolean = true,
     ): Promise<Buffer> {
         try {
-            const tempUrlResponse = await this.getTempUrl(fileId, preferOpus);
-            const downloadUrl =
-                preferOpus && tempUrlResponse.temp_url_opus
-                    ? tempUrlResponse.temp_url_opus
-                    : tempUrlResponse.temp_url;
+            const downloadUrl = await this.onPlatform(
+                async () => {
+                    const tempUrlResponse = await this.getTempUrl(
+                        fileId,
+                        preferOpus,
+                    );
+                    if (isV4MigratedBody(tempUrlResponse)) {
+                        throw migratedError();
+                    }
+                    return preferOpus && tempUrlResponse.temp_url_opus
+                        ? tempUrlResponse.temp_url_opus
+                        : tempUrlResponse.temp_url;
+                },
+                () => this.getV4AudioUrl(fileId, preferOpus),
+            );
 
             const response = await plaudFetch(downloadUrl);
             if (!response.ok) {
@@ -280,9 +621,16 @@ export class PlaudClient {
      * links to their bodies. Goes through `request`, so it inherits
      * workspace-token auth, retry/backoff, and 401 → PLAUD_INVALID_TOKEN.
      * NOTE: the response shape is unverified (see #204 / Phase 0).
+     * On a 4.0 account the `/file-app/v4/files/detail` objects are adapted to
+     * the same shape by `v4DetailToFileDetail`.
      */
     async getFileDetail(fileId: string): Promise<PlaudFileDetailResponse> {
-        return this.request<PlaudFileDetailResponse>(`/file/detail/${fileId}`);
+        return this.onPlatform(
+            () =>
+                this.request<PlaudFileDetailResponse>(`/file/detail/${fileId}`),
+            async () =>
+                v4DetailToFileDetail(await this.getV4FileDetail(fileId)),
+        );
     }
 
     /**
@@ -332,10 +680,58 @@ export class PlaudClient {
         fileId: string,
         filename: string,
     ): Promise<PlaudUpdateFilenameResponse> {
-        return this.request<PlaudUpdateFilenameResponse>(`/file/${fileId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ filename }),
-        });
+        return this.onPlatform(
+            () =>
+                this.request<PlaudUpdateFilenameResponse>(`/file/${fileId}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ filename }),
+                }),
+            () => this.renameV4(fileId, filename),
+        );
+    }
+
+    /**
+     * 4.0 renames the tree node, not the file, and needs the node's current
+     * `version_ms` as `origin_version`. Retries once on a version conflict.
+     */
+    private async renameV4(
+        fileId: string,
+        filename: string,
+    ): Promise<PlaudUpdateFilenameResponse> {
+        for (let attempt = 0; ; attempt++) {
+            const detail = await this.getV4FileDetail(fileId);
+            const nodeId = detail.node?.node_id;
+            const version = detail.node?.version_ms;
+            if (!nodeId || typeof version !== "number") {
+                throw new AppError(
+                    ErrorCode.PLAUD_API_ERROR,
+                    "Plaud 4.0 file detail has no node to rename.",
+                    400,
+                );
+            }
+            try {
+                await this.requestV4<unknown>(
+                    `/file-app/v4/nodes/rename/${encodeURIComponent(nodeId)}`,
+                    {
+                        method: "PATCH",
+                        body: JSON.stringify({
+                            name: filename,
+                            origin_version: version,
+                        }),
+                    },
+                );
+                return { status: 0, msg: "" };
+            } catch (err) {
+                if (
+                    attempt === 0 &&
+                    err instanceof AppError &&
+                    err.details?.plaudCode === V4_NODE_VERSION_CONFLICT
+                ) {
+                    continue;
+                }
+                throw err;
+            }
+        }
     }
 }
 

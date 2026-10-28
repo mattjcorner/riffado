@@ -24,6 +24,7 @@ import {
     parseTranscript,
     selectContentItems,
 } from "@/lib/plaud/content";
+import { md5Hex } from "@/lib/plaud/v4";
 import {
     captureServerEvent,
     captureServerException,
@@ -384,8 +385,8 @@ async function processRecording(
             duration: plaudRecording.duration,
             startTime: new Date(plaudRecording.start_time),
             endTime: new Date(plaudRecording.end_time),
-            filesize: plaudRecording.filesize,
-            fileMd5: plaudRecording.file_md5,
+            filesize: plaudRecording.filesize || audioBuffer.length,
+            fileMd5: plaudRecording.file_md5 || md5Hex(audioBuffer),
             storageType: env.DEFAULT_STORAGE_TYPE,
             storagePath: storageKey,
             downloadedAt: new Date(),

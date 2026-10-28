@@ -5,6 +5,7 @@ import {
     transcodeToMp3Segments,
 } from "@/lib/transcription/ffmpeg";
 import { buildTranscriptionParams } from "@/lib/transcription/format";
+import { formatTimestamp } from "@/lib/transcription/speaker-text";
 
 // OpenAI currently rejects diarization chunks over 1,400 seconds. Leave a
 // margin for container timestamps and provider-side chunk boundary changes.
@@ -140,17 +141,4 @@ function formatDiarizedResponse(
     }
 
     return formattedTurns;
-}
-
-function formatTimestamp(seconds: number): string {
-    const wholeSeconds = Math.max(0, Math.floor(seconds));
-    const hours = Math.floor(wholeSeconds / 3600);
-    const minutes = Math.floor((wholeSeconds % 3600) / 60);
-    const remainingSeconds = wholeSeconds % 60;
-    const minuteText = String(minutes).padStart(2, "0");
-    const secondText = String(remainingSeconds).padStart(2, "0");
-
-    return hours > 0
-        ? `${String(hours).padStart(2, "0")}:${minuteText}:${secondText}`
-        : `${minuteText}:${secondText}`;
 }

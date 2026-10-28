@@ -345,10 +345,13 @@ export function RichMarkdown({
 // (WhisperX), `Speaker 1` (Plaud), and the `UNKNOWN` fallback. A generic
 // `Capitalized:` pattern would misread an ordinary transcript line such as
 // `Question: ...` or `Action item: ...` as a speaker turn and wrongly switch a
-// non-diarized transcript out of its plain-text fallback.
+// non-diarized transcript out of its plain-text fallback, so arbitrary names
+// (`Alice: ...`, `[01:05] Alice: ...`) only count when EVERY line is labelled.
 const SPEAKER_RE = /^(SPEAKER_\w+|Speaker\s+\w+|UNKNOWN):\s*(.*)$/;
 const TIMESTAMPED_SPEAKER_RE =
     /^\[(\d{2}(?::\d{2}){1,2})\]\s+(Speaker\s+\w+)(\s+·\s+Part\s+\d+)?$/;
+const NAMED_SPEAKER_RE =
+    /^(?:\[(\d{2}(?::\d{2}){1,2})\]\s+)?([^\s:[\]?!;"][^:[\]?!;"]{0,39}):\s+(\S.*)$/;
 
 const SPEAKER_COLORS = [
     "text-accent-cyan",
@@ -365,6 +368,8 @@ const SPEAKER_COLORS = [
  *
  * Plaud transcripts arrive as `SPEAKER_00: ...` / `Speaker 1: ...` lines.
  * OpenAI diarization uses a timestamped speaker header followed by its text.
+ * Transcripts with named speakers (`Alice: ...`, optionally prefixed with
+ * `[mm:ss] `) render by speaker when every line carries a label.
  * Continuation lines are appended to the preceding turn. When no line carries
  * a label at all, the whole text keeps the previous pre-wrapped rendering.
  */
@@ -386,7 +391,22 @@ export function SpeakerTranscript({
         label: string | null;
         text: string;
     }[] = [];
-    for (const line of lines) {
+    const named = lines.map((line) => line.match(NAMED_SPEAKER_RE));
+    const allNamed =
+        named.length > 0 &&
+        named.every(Boolean) &&
+        (named.length > 1 || Boolean(named[0]?.[1]));
+    for (const [i, line] of lines.entries()) {
+        const match = named[i];
+        if (allNamed && match) {
+            const prefix = match[1] ? `[${match[1]}] ` : "";
+            turns.push({
+                speaker: match[2],
+                label: `${prefix}${match[2]}:`,
+                text: match[3],
+            });
+            continue;
+        }
         const labeled = line.match(SPEAKER_RE);
         const timestamped = line.match(TIMESTAMPED_SPEAKER_RE);
         if (labeled) {
